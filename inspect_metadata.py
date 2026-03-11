@@ -16,11 +16,12 @@ METADATA_FLAGS = {
     5: 'Small town',
     6: 'Major road',
     7: 'National park',
-    8: 'National forest',
+    8: 'National forest (deprecated)',
     9: 'Extreme terrain',
     10: 'High terrain',
     11: 'Moderate terrain',
     12: 'Background',
+    13: 'Hiking trail',
 }
 
 def decode_metadata(metadata_value):

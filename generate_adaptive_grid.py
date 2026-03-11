@@ -339,6 +339,49 @@ class DataLoader:
         except Exception as e:
             print(f"✗ Error loading national forests: {e}")
 
+    def load_trails(self):
+        """Load National Recreation Trails and State-designated trails"""
+        print("\nLoading trails...")
+        try:
+            # Load NRT data
+            nrt_file = os.path.join(config.DATA_DIR, 'trails', 'national_recreation_trails.shp')
+            state_trails_file = os.path.join(config.DATA_DIR, 'trails', 'state_trails.shp')
+
+            nrt_gdf = None
+            state_gdf = None
+
+            if os.path.exists(nrt_file):
+                nrt_gdf = gpd.read_file(nrt_file)
+                # Filter for CONUS
+                nrt_gdf = nrt_gdf.cx[-135:-60, 21:53].copy()
+                print(f"✓ National Recreation Trails loaded: {len(nrt_gdf)} trails")
+            else:
+                print(f"⚠ NRT file not found: {nrt_file}")
+                print("  Download from: https://catalog.data.gov/dataset/national-park-service-trails/")
+
+            if os.path.exists(state_trails_file):
+                state_gdf = gpd.read_file(state_trails_file)
+                # Filter for CONUS
+                state_gdf = state_gdf.cx[-135:-60, 21:53].copy()
+                print(f"✓ State-designated trails loaded: {len(state_gdf)} trails")
+            else:
+                print(f"⚠ State trails file not found: {state_trails_file}")
+
+            # Combine trails
+            if nrt_gdf is not None and state_gdf is not None:
+                self.data['trails'] = pd.concat([nrt_gdf, state_gdf], ignore_index=True)
+            elif nrt_gdf is not None:
+                self.data['trails'] = nrt_gdf
+            elif state_gdf is not None:
+                self.data['trails'] = state_gdf
+
+            if 'trails' in self.data:
+                # Calculate total trail length
+                total_km = self.data['trails'].to_crs('EPSG:3857').geometry.length.sum() / 1000
+                print(f"  Total trail length: {total_km:,.0f} km")
+        except Exception as e:
+            print(f"✗ Error loading trails: {e}")
+
     def load_all(self):
         """Load all datasets"""
         print("="*70)
@@ -350,7 +393,8 @@ class DataLoader:
         self.load_lakes()
         self.load_protected_areas()
         self.load_national_parks()
-        self.load_national_forests()
+        # self.load_national_forests()  # Replaced by trail-based approach
+        self.load_trails()
         self.load_urban_areas()
         self.load_roads()
         self.load_ski_resorts()

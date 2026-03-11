@@ -45,11 +45,115 @@ METADATA_URBAN_SUBURBAN = 1 << 4 # Suburban (large clusters)
 METADATA_SMALL_TOWN = 1 << 5    # Small town (small clusters)
 METADATA_ROAD = 1 << 6          # Near major road
 METADATA_PARK = 1 << 7          # In national park
-METADATA_FOREST = 1 << 8        # In national forest
+METADATA_FOREST = 1 << 8        # In national forest (deprecated)
 METADATA_TERRAIN_EXTREME = 1 << 9  # Extreme terrain variability
 METADATA_TERRAIN_HIGH = 1 << 10     # High terrain variability
 METADATA_TERRAIN_MODERATE = 1 << 11 # Moderate terrain variability
 METADATA_BACKGROUND = 1 << 12      # Background grid point
+METADATA_TRAIL = 1 << 13           # Near hiking trail (NRT + State trails)
+
+
+def sample_along_line(linestring, spacing_m=100):
+    """
+    Sample points at regular intervals along a LineString
+
+    Args:
+        linestring: Shapely LineString or MultiLineString
+        spacing_m: Distance in meters between sample points
+
+    Returns:
+        List of (lon, lat) points
+    """
+    from shapely.geometry import MultiLineString, LineString
+
+    # If MultiLineString, process each component
+    if linestring.geom_type == 'MultiLineString':
+        points = []
+        for line in linestring.geoms:
+            points.extend(sample_along_line(line, spacing_m))
+        return points
+
+    # For LineString: sample at regular distances
+    # Note: linestring.length is in degrees for WGS84, need to use projected coords
+    # This is a rough approximation - will be more accurate after projection
+    points = []
+
+    # Sample every ~100m along the line (rough approximation in degrees)
+    # 1 degree ≈ 111km, so 100m ≈ 0.0009 degrees
+    deg_spacing = spacing_m / 111000.0
+    num_samples = max(int(linestring.length / deg_spacing), 2)
+
+    for i in range(num_samples):
+        fraction = i / max(num_samples - 1, 1)
+        point = linestring.interpolate(fraction, normalized=True)
+        points.append((point.x, point.y))  # lon, lat
+
+    return points
+
+
+def add_trails_to_indices(trail_geometries, buffer_m, index_sets, proj, n_fine_i, n_fine_j):
+    """
+    Add trail-buffered indices using efficient Trail→Grid approach
+
+    Instead of checking each grid point against trail geometries (expensive),
+    iterate through trail points and mark nearby grid cells (fast).
+
+    Args:
+        trail_geometries: List of LineString/MultiLineString geometries (in WGS84)
+        buffer_m: Buffer distance in meters (e.g., 1000 for 1km)
+        index_sets: Dictionary to add indices to (will add to index_sets['trails'])
+        proj: Basemap projection object (HRRR)
+        n_fine_i: Number of fine grid cells in i direction
+        n_fine_j: Number of fine grid cells in j direction
+    """
+    base_resolution = 93.75  # meters per fine grid cell
+    buffer_cells = int(buffer_m / base_resolution) + 1
+    sample_spacing = 100  # meters between samples along trail
+
+    if 'trails' not in index_sets:
+        index_sets['trails'] = set()
+
+    print(f"    Sampling trail points (spacing={sample_spacing}m)...")
+    all_trail_points = []
+    for trail_geom in trail_geometries:
+        trail_points = sample_along_line(trail_geom, spacing_m=sample_spacing)
+        all_trail_points.extend(trail_points)
+
+    print(f"    Sampled {len(all_trail_points):,} points along trails")
+    print(f"    Projecting to HRRR coordinates...")
+
+    # Project all trail points at once (more efficient)
+    lons, lats = zip(*all_trail_points)
+    x_pts, y_pts = proj(lons, lats)
+
+    print(f"    Rasterizing {buffer_m}m buffer circles around trail points...")
+
+    # For each trail point, find nearby grid indices
+    for x, y in zip(x_pts, y_pts):
+        # Convert projected coordinates to fine grid indices
+        i_fine_center = int(y / base_resolution)
+        j_fine_center = int(x / base_resolution)
+
+        # Skip if center is out of bounds
+        if i_fine_center < 0 or i_fine_center >= n_fine_i or \
+           j_fine_center < 0 or j_fine_center >= n_fine_j:
+            continue
+
+        # Add all grid cells within buffer distance using circle rasterization
+        for di in range(-buffer_cells, buffer_cells + 1):
+            for dj in range(-buffer_cells, buffer_cells + 1):
+                # Check if within circular buffer
+                dist_cells_sq = di * di + dj * dj
+                if dist_cells_sq <= buffer_cells * buffer_cells:
+                    i_fine = i_fine_center + di
+                    j_fine = j_fine_center + dj
+
+                    # Bounds check
+                    if 0 <= i_fine < n_fine_i and 0 <= j_fine < n_fine_j:
+                        index_sets['trails'].add((i_fine, j_fine))
+
+    print(f"    Trail indices generated: {len(index_sets['trails']):,} points")
+
 
 class SparseGridGenerator:
     def __init__(self, test_region=None):
@@ -269,6 +373,22 @@ class SparseGridGenerator:
             stage_data['dx_north'], stage_data['dy_north'],
             stage_data['shape'], index_sets
         )
+
+        # Process trails using efficient Trail→Grid approach
+        print("\nProcessing hiking trails...")
+        trails_gdf = self.loader.data.get('trails')
+        if trails_gdf is not None:
+            print(f"  Found {len(trails_gdf)} trail features")
+            add_trails_to_indices(
+                trail_geometries=list(trails_gdf.geometry),
+                buffer_m=1000,  # 1km buffer
+                index_sets=index_sets,
+                proj=self.proj,
+                n_fine_i=stage_data['n_fine_i'],
+                n_fine_j=stage_data['n_fine_j']
+            )
+        else:
+            print("  No trail data found (trails will not be included)")
 
         # Save stage 2 checkpoint
         self._save_stage2_checkpoint(index_sets, stage_data['n_fine_i'], stage_data['n_fine_j'])
@@ -509,10 +629,11 @@ class SparseGridGenerator:
             # Recreation and transportation
             'ski_resorts': set(),
             'roads': set(),
+            'trails': set(),  # Hiking trails (NRT + State trails)
 
             # Protected areas
             'parks': set(),
-            'forests': set(),
+            'forests': set(),  # Deprecated (kept for checkpoint compatibility)
         }
 
     def _process_terrain(self, terrain, index_sets, n_fine_i, n_fine_j):
@@ -686,15 +807,15 @@ class SparseGridGenerator:
             self.spatial_indices['parks'] = STRtree(boundaries)
             del parks_proj
 
-        # Forests
-        forests_gdf = self.loader.data.get('national_forests')
-        if forests_gdf is not None:
-            forests_proj = forests_gdf.to_crs(self.hrrr_crs)
-            print(f"    Processing {len(forests_proj)} national forests...")
-            boundaries = list(forests_proj.geometry)
-            self.buffered_features['forests'] = boundaries
-            self.spatial_indices['forests'] = STRtree(boundaries)
-            del forests_proj
+        # Forests - DEPRECATED: Replaced by trail-based approach
+        # forests_gdf = self.loader.data.get('national_forests')
+        # if forests_gdf is not None:
+        #     forests_proj = forests_gdf.to_crs(self.hrrr_crs)
+        #     print(f"    Processing {len(forests_proj)} national forests...")
+        #     boundaries = list(forests_proj.geometry)
+        #     self.buffered_features['forests'] = boundaries
+        #     self.spatial_indices['forests'] = STRtree(boundaries)
+        #     del forests_proj
 
         print("  ✓ All geometries buffered and indexed")
 
@@ -858,10 +979,11 @@ class SparseGridGenerator:
                 metadata |= METADATA_TERRAIN_HIGH
             tier2_dict[idx] = (2, metadata)
 
-        # Tier 3: Coastlines/lakes 3km OR small towns OR roads OR parks OR forests OR rugged (stride=8, 750m)
+        # Tier 3: Coastlines/lakes 3km OR small towns OR roads OR parks OR rugged (stride=8, 750m)
+        # Note: Forests removed, replaced by trail-based approach at Tier 0
         tier3_full = (index_sets['coastline_3000m'] | index_sets['lakes_3000m'] |
                      index_sets['small_towns'] | index_sets['roads'] |
-                     index_sets['parks'] | index_sets['forests'] | index_sets['terrain_gt300'])
+                     index_sets['parks'] | index_sets['terrain_gt300'])
         tier3_indices = tier3_full - tier2_full - tier1_full - tier0_indices
 
         tier3_dict = {}
@@ -877,8 +999,7 @@ class SparseGridGenerator:
                 metadata |= METADATA_ROAD
             if idx in index_sets['parks']:
                 metadata |= METADATA_PARK
-            if idx in index_sets['forests']:
-                metadata |= METADATA_FOREST
+            # Forests removed - replaced by trail-based approach
             if idx in index_sets['terrain_gt300']:
                 metadata |= METADATA_TERRAIN_MODERATE
             tier3_dict[idx] = (3, metadata)
@@ -978,13 +1099,26 @@ class SparseGridGenerator:
         # Process tiers with priority (high to low)
         final_results = []  # List of (i, j, tier, metadata) tuples
 
-        # Tier 0: Ski resorts (stride=1, keep all)
-        tier0_indices = sorted_sets['ski_resorts']
+        # Tier 0: Ski resorts + Trails (stride=1, keep all, 93.75m resolution)
+        tier0_ski = sorted_sets.get('ski_resorts', np.array([], dtype=np.int64))
+        tier0_trails = sorted_sets.get('trails', np.array([], dtype=np.int64))
+        tier0_indices = np.unique(np.concatenate([tier0_ski, tier0_trails]))
         print(f"  Tier 0 (93.75m): {len(tier0_indices):,} indices")
+
         for encoded_idx in tier0_indices:
             i = int(encoded_idx // (2**32))
             j = int(encoded_idx % (2**32))
-            final_results.append((i, j, 0, METADATA_SKI_RESORT))
+
+            # Determine metadata based on which feature(s) this point belongs to
+            metadata = 0
+            if np.searchsorted(tier0_ski, encoded_idx) < len(tier0_ski) and \
+               tier0_ski[np.searchsorted(tier0_ski, encoded_idx)] == encoded_idx:
+                metadata |= METADATA_SKI_RESORT
+            if np.searchsorted(tier0_trails, encoded_idx) < len(tier0_trails) and \
+               tier0_trails[np.searchsorted(tier0_trails, encoded_idx)] == encoded_idx:
+                metadata |= METADATA_TRAIL
+
+            final_results.append((i, j, 0, metadata))
 
         # Track assigned indices to avoid duplicates
         assigned = set(tier0_indices)
@@ -1067,7 +1201,8 @@ class SparseGridGenerator:
                     final_results.append((i, j, 2, metadata))
                     assigned.add(encoded_idx)
 
-        # Tier 3: Coastlines/lakes 3km OR small towns OR roads OR parks OR forests OR rugged (stride=8)
+        # Tier 3: Coastlines/lakes 3km OR small towns OR roads OR parks OR rugged (stride=8)
+        # Note: Forests removed, replaced by trail-based approach at Tier 0
         print(f"  Tier 3 (750m): Processing...")
         tier3_combined = np.unique(np.concatenate([
             sorted_sets['coastline_3000m'],
@@ -1075,7 +1210,6 @@ class SparseGridGenerator:
             sorted_sets['small_towns'],
             sorted_sets['roads'],
             sorted_sets['parks'],
-            sorted_sets['forests'],
             sorted_sets['terrain_gt300']
         ]))
         tier3_new = tier3_combined[~np.isin(tier3_combined, list(assigned))]
@@ -1107,9 +1241,7 @@ class SparseGridGenerator:
                     if np.searchsorted(sorted_sets['parks'], encoded_idx) < len(sorted_sets['parks']) and \
                        sorted_sets['parks'][np.searchsorted(sorted_sets['parks'], encoded_idx)] == encoded_idx:
                         metadata |= METADATA_PARK
-                    if np.searchsorted(sorted_sets['forests'], encoded_idx) < len(sorted_sets['forests']) and \
-                       sorted_sets['forests'][np.searchsorted(sorted_sets['forests'], encoded_idx)] == encoded_idx:
-                        metadata |= METADATA_FOREST
+                    # Forests removed - replaced by trail-based approach
                     if np.searchsorted(sorted_sets['terrain_gt300'], encoded_idx) < len(sorted_sets['terrain_gt300']) and \
                        sorted_sets['terrain_gt300'][np.searchsorted(sorted_sets['terrain_gt300'], encoded_idx)] == encoded_idx:
                         metadata |= METADATA_TERRAIN_MODERATE
