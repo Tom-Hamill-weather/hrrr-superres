@@ -11,7 +11,10 @@ import os
 def visualize_point_grid(lat_center, lon_center, box_size_km=3):
     """Create detailed scatter plot of point positions"""
 
-    nc_file = os.path.join(config.OUTPUT_DIR, 'adaptive_grid_SPARSE.nc')
+    # Check for trails version first, fall back to regular
+    nc_file = os.path.join(config.OUTPUT_DIR, 'adaptive_grid_SPARSE_trails.nc')
+    if not os.path.exists(nc_file):
+        nc_file = os.path.join(config.OUTPUT_DIR, 'adaptive_grid_SPARSE.nc')
 
     # Load points
     lat_half = (box_size_km / 2.0) / 111.0

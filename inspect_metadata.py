@@ -117,6 +117,13 @@ if __name__ == '__main__':
     if len(sys.argv) > 1:
         nc_file = sys.argv[1]
     else:
-        nc_file = 'output/adaptive_grid_SPARSE_west_wa.nc'
+        # Try trails version first, fall back to others
+        import os
+        if os.path.exists('output/adaptive_grid_SPARSE_trails.nc'):
+            nc_file = 'output/adaptive_grid_SPARSE_trails.nc'
+        elif os.path.exists('output/adaptive_grid_SPARSE.nc'):
+            nc_file = 'output/adaptive_grid_SPARSE.nc'
+        else:
+            nc_file = 'output/adaptive_grid_SPARSE_west_wa.nc'
 
     inspect_metadata(nc_file)

@@ -531,7 +531,7 @@ class SparseGridGenerator:
         if self.test_region:
             output_path = f'output/adaptive_grid_SPARSE_{self.test_region}.nc'
         else:
-            output_path = 'output/adaptive_grid_SPARSE.nc'
+            output_path = 'output/adaptive_grid_SPARSE_trails.nc'  # New filename for trail-based version
         self._write_output(lats_out, lons_out, tiers_out, metadata_out, output_path)
 
         return lats_out, lons_out, tiers_out, metadata_out, output_path

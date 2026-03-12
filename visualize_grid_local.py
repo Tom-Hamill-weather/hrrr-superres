@@ -203,7 +203,7 @@ Examples:
     parser.add_argument('longitude', type=float, help='Center longitude (degrees, negative for West)')
     parser.add_argument('--box', type=float, default=20.0, help='Box size in km (default: 20)')
     parser.add_argument('--netcdf', type=str, default=None,
-                       help='Path to netCDF file (default: output/adaptive_grid_SPARSE.nc)')
+                       help='Path to netCDF file (default: output/adaptive_grid_SPARSE_trails.nc)')
     parser.add_argument('--output', type=str, default=None,
                        help='Output filename (default: auto-generated)')
 
@@ -218,12 +218,14 @@ Examples:
     if args.netcdf:
         nc_file = args.netcdf
     else:
-        # Try SPARSE first, then fall back to GEN2, then original
-        nc_file = os.path.join(config.OUTPUT_DIR, 'adaptive_grid_SPARSE.nc')
+        # Try trails version first, then SPARSE, then fall back to GEN2, then original
+        nc_file = os.path.join(config.OUTPUT_DIR, 'adaptive_grid_SPARSE_trails.nc')
         if not os.path.exists(nc_file):
-            nc_file = os.path.join(config.OUTPUT_DIR, 'adaptive_grid_GEN2.nc')
+            nc_file = os.path.join(config.OUTPUT_DIR, 'adaptive_grid_SPARSE.nc')
             if not os.path.exists(nc_file):
-                nc_file = os.path.join(config.OUTPUT_DIR, 'adaptive_grid_points.nc')
+                nc_file = os.path.join(config.OUTPUT_DIR, 'adaptive_grid_GEN2.nc')
+                if not os.path.exists(nc_file):
+                    nc_file = os.path.join(config.OUTPUT_DIR, 'adaptive_grid_points.nc')
 
     if not os.path.exists(nc_file):
         print(f"✗ Error: NetCDF file not found: {nc_file}")

@@ -293,8 +293,10 @@ def main():
     print("="*70)
     print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
-    # Check for input file
-    nc_file = os.path.join(config.OUTPUT_DIR, 'adaptive_grid_SPARSE.nc')
+    # Check for input file (try trails version first, fall back to regular)
+    nc_file = os.path.join(config.OUTPUT_DIR, 'adaptive_grid_SPARSE_trails.nc')
+    if not os.path.exists(nc_file):
+        nc_file = os.path.join(config.OUTPUT_DIR, 'adaptive_grid_SPARSE.nc')
 
     if not os.path.exists(nc_file):
         print(f"✗ Error: NetCDF file not found: {nc_file}")

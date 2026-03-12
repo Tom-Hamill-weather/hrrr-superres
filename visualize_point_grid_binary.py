@@ -150,8 +150,8 @@ Examples:
     parser.add_argument('--box-sizes', type=float, nargs='+',
                         default=[0.4, 0.2, 0.05],
                         help='Box sizes in degrees (default: 0.4 0.2 0.05)')
-    parser.add_argument('--input-file', type=str, default='adaptive_grid_SPARSE.nc',
-                        help='Input NetCDF file (default: adaptive_grid_SPARSE.nc)')
+    parser.add_argument('--input-file', type=str, default='adaptive_grid_SPARSE_trails.nc',
+                        help='Input NetCDF file (default: adaptive_grid_SPARSE_trails.nc)')
 
     args = parser.parse_args()
 
