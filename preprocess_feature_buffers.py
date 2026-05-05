@@ -2,12 +2,25 @@
 Preprocessing: Create and cache unified feature buffers
 This saves 5-10 minutes per grid generation run by pre-computing the expensive buffer operations
 
+CURRENT CONFIGURATION:
+- Ski resorts: config.SKI_RESORT_BUFFER_KM buffer at Tier 0 (93.75m)
+- Coastlines: handled at runtime by WrfTerrainAnalyzer via WRF land_sea_mask distance transform
+- Great Lakes (5): config.GREAT_LAKES_BUFFER_KM shoreline buffer at Tier 1 (187.5m)
+- Specific water bodies (Puget Sound, SF Bay etc.): Tier 1 (187.5m)
+- Inland lakes: config.INLAND_LAKES_BUFFER_KM buffer at Tier config.INLAND_LAKES_TIER
+- Golf courses: excluded from cache (polygon-interior points generated in generate_points())
+- Urban areas (Urbanized Areas ≥50k pop): config.URBAN_BUFFER_KM buffer at Tier 3
+- Suburban areas (Urban Clusters >60th pct area): config.SUBURBAN_BUFFER_KM at Tier config.SUBURBAN_TIER
+- Primary roads: config.HIGHWAY_BUFFER_KM buffer at Tier config.HIGHWAY_TIER
+- National forests: Tier config.NATIONAL_FOREST_TIER (with NPS exclusion)
+
 Run once after downloading/updating feature data:
     python3 preprocess_feature_buffers.py
 
 Output: data/preprocessed/tier_buffers.gpkg (contains unified buffers for all tiers)
 """
 import os
+from collections import defaultdict
 import geopandas as gpd
 from shapely.ops import unary_union
 import time
@@ -53,73 +66,108 @@ def preprocess_buffers():
     print(" CREATING UNIFIED BUFFERS")
     print("="*70)
 
-    all_geometries = {1: [], 2: [], 3: []}
+    all_geometries = defaultdict(list)
 
-    # 1. OCEAN COASTLINES - Tier 1
-    print("\n1. Processing ocean coastlines...")
-    coastline_gdf = loader.data.get('ocean_coastline')
-    if coastline_gdf is not None:
-        significant_coastlines = coastline_gdf[coastline_gdf['length_km'] > 50].copy()
-        print(f"   {len(significant_coastlines)} segments (>50km), {significant_coastlines['length_km'].sum():.0f}km")
-        coast_proj = significant_coastlines.to_crs(hrrr_crs)
-        all_geometries[1].extend(coast_proj.geometry.tolist())
+    # 1. OCEAN COASTLINES — handled at runtime by WrfTerrainAnalyzer.
+    # The WRF land_sea_mask + distance_transform_edt computes coastal bands
+    # per WRF pixel (~800m resolution), not cached as vector polygons here.
+    print("\n1. Ocean coastlines: handled at runtime by WrfTerrainAnalyzer (not cached)")
 
-    # 2. LAKES - Tier 1
-    print("\n2. Processing lakes...")
-    lakes_gdf = loader.data.get('lakes')
-    if lakes_gdf is not None and len(lakes_gdf) > 0:
-        print(f"   {len(lakes_gdf)} features, {lakes_gdf['coastline_length_km'].sum():.0f}km")
-        lakes_proj = lakes_gdf.to_crs(hrrr_crs)
-        all_geometries[1].extend(lakes_proj.geometry.boundary.tolist())
+    # 2. GREAT LAKES - Tier 1 (0.5km shoreline buffer)
+    print("\n2. Processing Great Lakes...")
+    great_lakes_gdf = loader.data.get('great_lakes')
+    if great_lakes_gdf is not None and len(great_lakes_gdf) > 0:
+        print(f"   {len(great_lakes_gdf)} Great Lakes, {great_lakes_gdf['coastline_length_km'].sum():.0f}km shoreline")
+        gl_proj = great_lakes_gdf.to_crs(hrrr_crs)
+        gl_buffered = gl_proj.geometry.buffer(config.GREAT_LAKES_BUFFER_KM * 1000)
+        all_geometries[1].extend(gl_buffered.tolist())
 
-    # 3. URBAN AREAS - Tier 2
-    print("\n3. Processing urban areas...")
-    urban_high = loader.data.get('high_density_urban')
-    urban_low = loader.data.get('urban')
-    urban_count = 0
-    if urban_high is not None and len(urban_high) > 0:
-        urban_proj = urban_high.to_crs(hrrr_crs)
-        all_geometries[2].extend(urban_proj.geometry.boundary.tolist())
-        urban_count += len(urban_high)
-    if urban_low is not None and len(urban_low) > 0:
-        cluster_proj = urban_low.to_crs(hrrr_crs)
-        all_geometries[2].extend(cluster_proj.geometry.boundary.tolist())
-        urban_count += len(urban_low)
-    if urban_count > 0:
-        print(f"   {urban_count} areas")
-
-    # 4. SKI RESORTS - Tier 2
-    print("\n4. Processing ski resorts...")
+    # 3. SKI RESORTS - Tier 0 (93.75m, 4km buffer)
+    print("\n3. Processing ski resorts...")
     ski_gdf = loader.data.get('ski_resorts')
     if ski_gdf is not None and len(ski_gdf) > 0:
-        print(f"   {len(ski_gdf)} locations (2km buffer)")
+        print(f"   {len(ski_gdf)} locations ({config.SKI_RESORT_BUFFER_KM}km buffer)")
         ski_proj = ski_gdf.to_crs(hrrr_crs)
-        ski_buffered = ski_proj.geometry.buffer(2000)
-        all_geometries[2].extend(ski_buffered.tolist())
+        ski_buffered = ski_proj.geometry.buffer(config.SKI_RESORT_BUFFER_KM * 1000)
+        all_geometries[0].extend(ski_buffered.tolist())
 
-    # 5. PRIMARY ROADS - Tier 3
-    print("\n5. Processing roads...")
-    roads_gdf = loader.data.get('roads')
-    if roads_gdf is not None and len(roads_gdf) > 0:
-        print(f"   {len(roads_gdf)} segments (500m buffer)")
-        roads_proj = roads_gdf.to_crs(hrrr_crs)
-        all_geometries[3].extend(roads_proj.geometry.tolist())
+    # 4. SPECIFIC WATER BODIES - Tier 1 (187.5m)
+    print("\n4. Processing specific water bodies...")
+    water_bodies_gdf = loader.data.get('water_bodies')
+    if water_bodies_gdf is not None and len(water_bodies_gdf) > 0:
+        print(f"   {len(water_bodies_gdf)} specific water bodies")
+        wb_proj = water_bodies_gdf.to_crs(hrrr_crs)
+        all_geometries[1].extend(wb_proj.geometry.tolist())
 
-    # 6. NATIONAL PARKS - Tier 3
-    print("\n6. Processing national parks...")
-    parks_gdf = loader.data.get('national_parks')
-    if parks_gdf is not None and len(parks_gdf) > 0:
-        print(f"   {len(parks_gdf)} NPS units")
-        parks_proj = parks_gdf.to_crs(hrrr_crs)
-        all_geometries[3].extend(parks_proj.geometry.tolist())
+    # 5. INLAND LAKES - Tier 1 (0.5km buffer)
+    print("\n5. Processing inland lakes...")
+    inland_lakes_gdf = loader.data.get('inland_lakes')
+    if inland_lakes_gdf is not None and len(inland_lakes_gdf) > 0:
+        print(f"   {len(inland_lakes_gdf)} inland lakes, {inland_lakes_gdf['coastline_length_km'].sum():.0f}km shoreline")
+        il_proj = inland_lakes_gdf.to_crs(hrrr_crs)
+        # Buffer by 0.5km for Tier 1
+        il_buffered = il_proj.geometry.buffer(config.INLAND_LAKES_BUFFER_KM * 1000)
+        all_geometries[config.INLAND_LAKES_TIER].extend(il_buffered.tolist())
 
-    # 7. NATIONAL FORESTS - Tier 3
-    print("\n7. Processing national forests...")
-    forests_gdf = loader.data.get('national_forests')
-    if forests_gdf is not None and len(forests_gdf) > 0:
-        print(f"   {len(forests_gdf)} forest units")
-        forests_proj = forests_gdf.to_crs(hrrr_crs)
-        all_geometries[3].extend(forests_proj.geometry.tolist())
+    # 6. GOLF COURSES — excluded from cached buffer.
+    # Golf points are generated polygon-interior-only in generate_points() using a
+    # globally-aligned 375m LCC grid.  Baking a 2.5 km cell buffer into the cache
+    # causes entire HRRR cells near each course to be upgraded to Tier 2, which
+    # produces rectangular gray blocks of 375m sub-grid points around every course.
+    print("\n6. Golf courses: skipped (handled by polygon-based generation in generate_points)")
+
+    # 7. URBAN AREAS - Tier 3 (Urbanized Areas ≥50k population)
+    # Buffer by URBAN_BUFFER_KM (default 1.5 km = half HRRR cell).  Census UA
+    # polygons are fragmented parcel-level geometries with many internal gaps;
+    # without a buffer most 3 km HRRR cell centres land in the gaps and miss
+    # the urban classification entirely.
+    print("\n7. Processing urban areas (Tier 3)...")
+    urban_gdf = loader.data.get('high_density_urban')
+    if urban_gdf is not None and len(urban_gdf) > 0:
+        print(f"   {len(urban_gdf)} urbanized areas (≥50k pop, "
+              f"{config.URBAN_BUFFER_KM}km buffer)")
+        urban_proj = urban_gdf.to_crs(hrrr_crs)
+        urban_buffered = urban_proj.geometry.buffer(config.URBAN_BUFFER_KM * 1000)
+        all_geometries[3].extend(urban_buffered.tolist())
+
+    # 7b. SUBURBAN AREAS - Tier config.SUBURBAN_TIER (Urban Clusters, larger ones)
+    print(f"\n7b. Processing suburban areas (Tier {config.SUBURBAN_TIER})...")
+    suburban_gdf = loader.data.get('suburban')
+    if suburban_gdf is not None and len(suburban_gdf) > 0:
+        print(f"   {len(suburban_gdf)} suburban clusters "
+              f"({config.SUBURBAN_BUFFER_KM}km buffer)")
+        suburban_proj = suburban_gdf.to_crs(hrrr_crs)
+        suburban_buffered = suburban_proj.geometry.buffer(config.SUBURBAN_BUFFER_KM * 1000)
+        all_geometries[config.SUBURBAN_TIER].extend(suburban_buffered.tolist())
+
+    # 8. PRIMARY ROADS - Tier config.HIGHWAY_TIER
+    print(f"\n8. Processing roads (Tier {config.HIGHWAY_TIER})...")
+    if config.INCLUDE_HIGHWAYS:
+        roads_gdf = loader.data.get('roads')
+        if roads_gdf is not None and len(roads_gdf) > 0:
+            print(f"   {len(roads_gdf)} segments ({config.HIGHWAY_BUFFER_KM}km buffer)")
+            roads_proj = roads_gdf.to_crs(hrrr_crs)
+            roads_buffered = roads_proj.geometry.buffer(config.HIGHWAY_BUFFER_KM * 1000)
+            all_geometries[config.HIGHWAY_TIER].extend(roads_buffered.tolist())
+
+    # 9. NATIONAL FORESTS - Tier config.NATIONAL_FOREST_TIER
+    print(f"\n9. Processing national forests (Tier {config.NATIONAL_FOREST_TIER})...")
+    if config.INCLUDE_NATIONAL_FORESTS:
+        forests_gdf = loader.data.get('national_forests')
+        if forests_gdf is not None and len(forests_gdf) > 0:
+            print(f"   {len(forests_gdf)} forest units")
+            forests_proj = forests_gdf.to_crs(hrrr_crs)
+            # Subtract NPS boundaries if configured
+            if config.EXCLUDE_PARKS_FROM_FORESTS and hasattr(loader, 'nps_boundaries'):
+                print("     Excluding NPS boundaries from forests...")
+                parks_proj = loader.nps_boundaries.to_crs(hrrr_crs)
+                parks_union = unary_union(parks_proj.geometry)
+                forests_proj_geom = gpd.GeoSeries(forests_gdf.geometry.tolist(), crs=forests_gdf.crs).to_crs(hrrr_crs)
+                forests_diff = forests_proj_geom.difference(parks_union)
+                forests_diff = forests_diff[~forests_diff.is_empty]
+                all_geometries[config.NATIONAL_FOREST_TIER].extend(forests_diff.tolist())
+            else:
+                all_geometries[config.NATIONAL_FOREST_TIER].extend(forests_proj.geometry.tolist())
 
     # Create unified buffers
     print("\n" + "="*70)
@@ -128,46 +176,16 @@ def preprocess_buffers():
 
     buffers = {}
 
-    # Tier 1 features: create distance-based buffers
-    if all_geometries[1]:
-        print("\nCreating tier 1-5 distance buffers from coastlines/lakes...")
-        geom_gdf = gpd.GeoSeries(all_geometries[1], crs=hrrr_crs)
-
-        print("  750m buffer (tier 1)...")
-        buffers[1] = geom_gdf.buffer(750).union_all()
-
-        print("  1500m buffer (tier 2)...")
-        buffers[2] = geom_gdf.buffer(1500).union_all()
-
-        print("  3km buffer (tier 3)...")
-        buffers[3] = geom_gdf.buffer(3000).union_all()
-
-        print("  6km buffer (tier 4)...")
-        buffers[4] = geom_gdf.buffer(6000).union_all()
-
-        print("  12km buffer (tier 5)...")
-        buffers[5] = geom_gdf.buffer(12000).union_all()
-
-    # Merge tier 2 features (urban + ski)
-    if all_geometries[2]:
-        print("\nMerging tier 2 features (urban + ski)...")
-        geom_gdf = gpd.GeoSeries(all_geometries[2], crs=hrrr_crs)
-        urban_ski_geom = geom_gdf.union_all()
-        if 2 in buffers:
-            buffers[2] = buffers[2].union(urban_ski_geom)
-        else:
-            buffers[2] = urban_ski_geom
-
-    # Merge tier 3 features (roads + parks + forests)
-    if all_geometries[3]:
-        print("\nMerging tier 3 features (roads + parks + forests)...")
-        print("  (This step takes longest due to road buffering)")
-        geom_gdf = gpd.GeoSeries(all_geometries[3], crs=hrrr_crs)
-        tier3_features = geom_gdf.buffer(500).union_all()
-        if 3 in buffers:
-            buffers[3] = buffers[3].union(tier3_features)
-        else:
-            buffers[3] = tier3_features
+    for tier in sorted(all_geometries.keys()):
+        if not all_geometries[tier]:
+            continue
+        n = len(all_geometries[tier])
+        print(f"\nUnifying Tier {tier} features ({n} geometries)...")
+        if n > 500:
+            print("  (Large geometry count — this may take several minutes)")
+        geom_gdf = gpd.GeoSeries(all_geometries[tier], crs=hrrr_crs)
+        buffers[tier] = geom_gdf.union_all()
+        print(f"  ✓ Tier {tier} unified")
 
     # Simplify buffers
     print("\nSimplifying buffers (1m tolerance)...")
@@ -196,6 +214,19 @@ def preprocess_buffers():
     print(f"\nSaving to: {output_file}")
     buffers_gdf.to_file(output_file, driver='GPKG', layer='tier_buffers')
 
+    # Coastal band ring geometries are no longer cached here.  Coastal classification
+    # is handled at runtime by WrfTerrainAnalyzer using the WRF land_sea_mask and
+    # scipy distance_transform_edt — no polygon buffers required.
+
+    # Write config fingerprint so generate_adaptive_grid.py can detect a stale cache
+    from shapely.geometry import Point as _Point
+    fp_gdf = gpd.GeoDataFrame(
+        [{'hash': config.cache_config_hash(), 'geometry': _Point(0, 0)}],
+        crs='EPSG:4326'
+    )
+    fp_gdf.to_file(output_file, driver='GPKG', layer='config_fingerprint')
+    print(f"  ✓ Config fingerprint stored: {config.cache_config_hash()}")
+
     file_size_mb = os.path.getsize(output_file) / 1e6
     elapsed = time.time() - start_time
 
@@ -205,10 +236,20 @@ def preprocess_buffers():
     print("\n" + "="*70)
     print(" PREPROCESSING COMPLETE")
     print("="*70)
-    print("\nFuture grid generations will load these cached buffers")
+    print("\nCached buffers saved and ready to use!")
+    print("\nConfiguration used:")
+    print(f"  - Ski resorts buffer: {config.SKI_RESORT_BUFFER_KM}km (Tier 0, 93.75m)")
+    print(f"  - Coastline: handled at runtime by WrfTerrainAnalyzer (WRF land_sea_mask)")
+    print(f"  - Golf courses: excluded from cache (polygon-interior in generate_points)")
+    print(f"  - Great Lakes buffer: {config.GREAT_LAKES_BUFFER_KM}km (Tier 1, 187.5m)")
+    print(f"  - Specific water bodies: Tier 1 (187.5m)")
+    print(f"  - Inland lakes buffer: {config.INLAND_LAKES_BUFFER_KM}km (Tier {config.INLAND_LAKES_TIER})")
+    print(f"  - Urban areas (≥50k): {config.URBAN_BUFFER_KM}km buffer (Tier 3)")
+    print(f"  - Suburban clusters:  {config.SUBURBAN_BUFFER_KM}km buffer (Tier {config.SUBURBAN_TIER})")
+    print(f"  - Primary roads:      {config.HIGHWAY_BUFFER_KM}km buffer (Tier {config.HIGHWAY_TIER})")
+    print(f"  - National forests:   Tier {config.NATIONAL_FOREST_TIER}")
+    print("\nFuture grid generations can load these cached buffers")
     print("instead of recomputing them (saves 5-10 minutes per run)")
-    print("\nTo use cached buffers, update generate_adaptive_grid_BINARY_FINAL.py")
-    print("to load from:", output_file)
 
     return output_file
 

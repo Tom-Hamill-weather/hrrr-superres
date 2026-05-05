@@ -87,24 +87,47 @@ def filter_points_to_hrrr_domain(point_lats, point_lons, point_tiers, hrrr_lats,
 
 
 def compute_point_density(point_lats, point_lons, hrrr_lats, hrrr_lons):
-    """Compute number of adaptive grid points per HRRR cell"""
+    """Compute number of adaptive grid points per HRRR cell using projection-space distance"""
     print("\nComputing point density per HRRR cell...")
 
     shape = hrrr_lats.shape
 
-    # Build KDTree for HRRR grid centers
-    hrrr_points = np.column_stack([hrrr_lats.ravel(), hrrr_lons.ravel()])
-    tree = cKDTree(hrrr_points)
+    # Create Lambert Conformal projection (same as HRRR)
+    lat_0 = 38.5
+    lon_0 = -97.5
+    lat_1 = 38.5
+    lat_2 = 38.5
 
-    # Find nearest HRRR cell for each adaptive grid point
-    adaptive_points = np.column_stack([point_lats, point_lons])
-    _, indices = tree.query(adaptive_points, k=1)
+    proj = Basemap(
+        projection='lcc',
+        lat_0=lat_0,
+        lon_0=lon_0,
+        lat_1=lat_1,
+        lat_2=lat_2,
+        llcrnrlat=21, urcrnrlat=53,
+        llcrnrlon=-135, urcrnrlon=-60,
+        resolution=None
+    )
+
+    # Convert HRRR grid centers to projection coordinates
+    x_hrrr, y_hrrr = proj(hrrr_lons, hrrr_lats)
+    hrrr_points_proj = np.column_stack([x_hrrr.ravel(), y_hrrr.ravel()])
+
+    # Build KDTree in projection space
+    tree = cKDTree(hrrr_points_proj)
+
+    # Convert adaptive grid points to projection coordinates
+    x_adaptive, y_adaptive = proj(point_lons, point_lats)
+    adaptive_points_proj = np.column_stack([x_adaptive, y_adaptive])
+
+    # Find nearest HRRR cell for each adaptive grid point (in projection space)
+    _, indices = tree.query(adaptive_points_proj, k=1)
 
     # VECTORIZED counting using bincount
-    point_count_flat = np.bincount(indices, minlength=hrrr_points.shape[0])
+    point_count_flat = np.bincount(indices, minlength=hrrr_points_proj.shape[0])
     point_count = point_count_flat.reshape(shape)
 
-    print(f"  Point density computed")
+    print(f"  Point density computed (using projection-space distance)")
     print(f"    Max points per cell: {point_count.max():,}")
     print(f"    Mean points per cell: {point_count.mean():.1f}")
     print(f"    Median points per cell: {np.median(point_count):.1f}")
@@ -170,19 +193,22 @@ def create_hrrr_basemap(hrrr_lats, hrrr_lons):
 def define_density_bins():
     """Define discrete density bins for visualization with log scale"""
     # Use log-scale bins that match the actual data distribution
-    # Density <= 1 is white, removed one intermediate blue-green color
-    bins = [0, 2, 5, 10, 50, 100, 200, 1100]
-    labels = ['≤1', '2-4', '5-9', '10-49', '50-99', '100-199', '200+']
+    # Cells with ≤4 points (Tier 4 background) are white
+    # Extended bins for higher density (up to 1000+)
+    bins = [0, 5, 10, 50, 100, 200, 400, 800, 1000, 1100]
+    labels = ['≤4', '5-9', '10-49', '50-99', '100-199', '200-399', '400-799', '800-999', '1000+']
 
-    # Use diverse color palette - better spread across actual data range
+    # Custom color palette as specified
     colors = [
-        '#ffffff',  # 0-1 - white (no/minimal points)
-        '#fde724',  # 2-4 - bright yellow
-        '#b5de2b',  # 5-9 - yellow-green
-        '#6ece58',  # 10-49 - green
-        '#26828e',  # 50-99 - blue-teal
-        '#3e4989',  # 100-199 - blue
-        '#d62728',  # 200+ - red
+        'White',      # 0-4
+        '#C4E8FF',    # 5-9 - light blue
+        '#8FB3FF',    # 10-49 - medium blue
+        '#42F742',    # 50-99 - bright green
+        'Yellow',     # 100-199
+        'Gold',       # 200-399
+        'Orange',     # 400-799
+        '#F6A3AE',    # 800-999 - pink
+        'Orchid',     # 1000+ - orchid/purple
     ]
 
     return bins, labels, colors
@@ -293,14 +319,16 @@ def main():
     print("="*70)
     print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
-    # Check for input file (try trails version first, fall back to regular)
-    nc_file = os.path.join(config.OUTPUT_DIR, 'adaptive_grid_SPARSE_trails.nc')
+    # Check for input file (try current version first, fall back to older versions)
+    nc_file = os.path.join(config.OUTPUT_DIR, 'adaptive_grid_points.nc')
+    if not os.path.exists(nc_file):
+        nc_file = os.path.join(config.OUTPUT_DIR, 'adaptive_grid_SPARSE_trails.nc')
     if not os.path.exists(nc_file):
         nc_file = os.path.join(config.OUTPUT_DIR, 'adaptive_grid_SPARSE.nc')
 
     if not os.path.exists(nc_file):
         print(f"✗ Error: NetCDF file not found: {nc_file}")
-        print("  Run generate_adaptive_grid_SPARSE.py first to create the grid")
+        print("  Run generate_adaptive_grid.py first to create the grid")
         return 1
 
     # Load HRRR grid

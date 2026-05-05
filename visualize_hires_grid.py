@@ -1,8 +1,9 @@
 """
-python visualize_point_grid_binary.py clat clon
+python visualize_hires_grid.py <nc_file> <lat> <lon> [--box-sizes ...]
 
-Visualize point grid for BINARY adaptive grid
-Works with files that don't have tier information
+Visualize point grid from a hi-res adaptive grid NetCDF file.
+Works with hires_points.nc (output of generate_hires_points.py)
+and also with the older adaptive_grid_points.nc format.
 """
 import numpy as np
 import netCDF4 as nc
@@ -231,7 +232,7 @@ def visualize_point_grid(lat_center, lon_center, box_size_deg=0.4, input_file='a
     lon_str = f"{abs(lon_center):.1f}{'E' if lon_center >= 0 else 'W'}"
 
     output_file = os.path.join(config.OUTPUT_DIR,
-                               f'point_grid_binary_{lat_str}_{lon_str}_{box_size_deg}deg.png')
+                               f'hires_grid_{lat_str}_{lon_str}_{box_size_deg}deg.png')
     plt.savefig(output_file, dpi=200, bbox_inches='tight')
     print(f"✓ Saved: {output_file}")
     plt.close(fig)
@@ -241,17 +242,17 @@ def visualize_point_grid(lat_center, lon_center, box_size_deg=0.4, input_file='a
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='Visualize point grid for adaptive grid NetCDF file',
+        description='Visualize hi-res adaptive grid points',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  python visualize_point_grid_binary.py adaptive_grid_points.nc 33.4 -118.4
-  python visualize_point_grid_binary.py adaptive_grid_points_golf.nc 40.7 -74.0
-  python visualize_point_grid_binary.py adaptive_grid_points_16M.nc 34.6 -85.3
+  python visualize_hires_grid.py hires_points.nc 36.6 -121.9   # Monterey coast
+  python visualize_hires_grid.py hires_points.nc 39.5 -106.0   # Summit County CO
+  python visualize_hires_grid.py hires_points.nc 40.7 -74.0    # New York City
         '''
     )
     parser.add_argument('input_file',
-                        help='NetCDF file in the output/ directory (e.g. adaptive_grid_points.nc)')
+                        help='NetCDF file in the output/ directory (e.g. hires_points.nc)')
     parser.add_argument('lat', type=float,
                         help='Center latitude')
     parser.add_argument('lon', type=float,
